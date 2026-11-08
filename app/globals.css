@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    /* Enforce zero animations & zero GPU transitions globally except active conversion indicators */
+    transition: none !important;
+    animation: none !important;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: #fafafa;
+    color: #0a0a0a;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeSpeed;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+.animate-spin {
+  animation: spin 0.85s linear infinite !important;
+}
+
+.animate-indeterminate {
+  animation: indeterminate-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite !important;
+}
