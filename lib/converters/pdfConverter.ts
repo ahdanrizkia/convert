@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import readline from 'node:readline';
+import path from 'node:path';
 import {
   PDFDocument,
   PageSizes,
@@ -164,7 +165,7 @@ function wrapTextLine(
 }
 
 /**
- * Converts raster images (`png`, `jpg`, `webp`, `avif`) into a single-page PDF via `pdf-lib`.
+ * Converts raster images (`png`, `jpg`, `jfif`, `webp`, `avif`) into a single-page PDF via `pdf-lib`.
  * Uses `sharp` to normalize EXIF orientation and transcode WebP/AVIF buffers for `pdf-lib`.
  */
 export async function convertImageToPdf(
@@ -173,24 +174,56 @@ export async function convertImageToPdf(
   sourceFormat: string
 ): Promise<void> {
   // Read into buffer so the `/tmp` input file descriptor closes immediately
-  const inputBuffer = await fs.readFile(inputPath);
-  const metadata = await sharp(inputBuffer, { failOn: 'error' }).metadata();
+  let inputBuffer = await fs.readFile(inputPath);
+
+  // If BMP or ICO, transcode buffer to PNG via FFmpeg first
+  if (sourceFormat === 'bmp' || sourceFormat === 'ico') {
+    const { spawn } = await import('node:child_process');
+    const ffmpegStatic = (await import('ffmpeg-static')).default;
+    const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    const ffmpegBin =
+      process.env.FFMPEG_PATH?.trim() ||
+      (typeof ffmpegStatic === 'string' ? ffmpegStatic : path.join(process.cwd(), 'node_modules', 'ffmpeg-static', exeName));
+
+    const pngChunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(ffmpegBin, ['-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath, '-f', 'image2pipe', '-vcodec', 'png', '-'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      child.stdout.on('data', (d: Buffer) => pngChunks.push(d));
+      child.once('error', reject);
+      child.once('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Failed to decode ${sourceFormat} for PDF`));
+      });
+    });
+    inputBuffer = Buffer.concat(pngChunks);
+    sourceFormat = 'png';
+  }
+
+  const sharpOptions =
+    sourceFormat === 'svg'
+      ? { density: 300, failOn: 'error' as const }
+      : { failOn: 'error' as const };
+  const metadata = await sharp(inputBuffer, sharpOptions).metadata();
 
   const needsExifRotation =
     typeof metadata.orientation === 'number' && metadata.orientation > 1;
   const isCmyk = metadata.space === 'cmyk';
+  const isJpeg = sourceFormat === 'jpg' || sourceFormat === 'jfif';
 
   const pdfDoc = await PDFDocument.create();
   let embeddedImage: PDFImage;
 
-  if (sourceFormat === 'jpg' && !needsExifRotation && !isCmyk) {
+  if (isJpeg && !needsExifRotation && !isCmyk) {
     try {
       embeddedImage = await pdfDoc.embedJpg(inputBuffer);
     } catch {
-      const normalizedJpg = await sharp(inputBuffer, { failOn: 'error' })
+      const normalizedJpg = await sharp(inputBuffer, sharpOptions)
         .rotate()
         .flatten({ background: '#ffffff' })
-        .jpeg({ quality: 90, mozjpeg: true })
+        .jpeg({ quality: 94, mozjpeg: true, chromaSubsampling: '4:4:4' })
         .toBuffer();
       embeddedImage = await pdfDoc.embedJpg(normalizedJpg);
     }
@@ -198,21 +231,21 @@ export async function convertImageToPdf(
     try {
       embeddedImage = await pdfDoc.embedPng(inputBuffer);
     } catch {
-      const normalizedPng = await sharp(inputBuffer, { failOn: 'error' })
+      const normalizedPng = await sharp(inputBuffer, sharpOptions)
         .rotate()
-        .png({ compressionLevel: 6 })
+        .png({ compressionLevel: 8 })
         .toBuffer();
       embeddedImage = await pdfDoc.embedPng(normalizedPng);
     }
   } else {
-    const pipeline = sharp(inputBuffer, { failOn: 'error' }).rotate();
-    if (metadata.hasAlpha && sourceFormat !== 'jpg') {
-      const pngBuffer = await pipeline.png({ compressionLevel: 6 }).toBuffer();
+    const pipeline = sharp(inputBuffer, sharpOptions).rotate();
+    if (metadata.hasAlpha && !isJpeg) {
+      const pngBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
       embeddedImage = await pdfDoc.embedPng(pngBuffer);
     } else {
       const jpgBuffer = await pipeline
         .flatten({ background: '#ffffff' })
-        .jpeg({ quality: 90, mozjpeg: true })
+        .jpeg({ quality: 94, mozjpeg: true, chromaSubsampling: '4:4:4' })
         .toBuffer();
       embeddedImage = await pdfDoc.embedJpg(jpgBuffer);
     }

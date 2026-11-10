@@ -3,17 +3,67 @@ export const DEFAULT_TTL_MS = 180_000; // 3 minutes (180,000 ms) fallback abando
 
 export type CategoryId = 'images' | 'data' | 'documents' | 'media';
 
-export type ImageFormat = 'png' | 'jpg' | 'webp' | 'avif';
-export type DataFormat = 'json' | 'csv' | 'txt';
-export type DocumentFormat = 'pdf';
-export type Phase1Format = ImageFormat | DataFormat;
+export type ImageFormat =
+  | 'png'
+  | 'jpg'
+  | 'jfif'
+  | 'webp'
+  | 'avif'
+  | 'svg'
+  | 'gif'
+  | 'bmp'
+  | 'ico'
+  | 'tiff';
 
-export const PDF_SOURCE_FORMATS = ['png', 'jpg', 'webp', 'avif', 'txt'] as const;
+export type DataFormat = 'json' | 'csv' | 'txt';
+
+export type DocumentFormat = 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'md' | 'html' | 'epub';
+
+export type MediaFormat =
+  | 'mp4'
+  | 'mp3'
+  | 'wav'
+  | 'ogg'
+  | 'aac'
+  | 'm4a'
+  | 'mov'
+  | 'webm'
+  | 'mkv';
+
+export const PDF_SOURCE_FORMATS = [
+  'png',
+  'jpg',
+  'jfif',
+  'webp',
+  'avif',
+  'svg',
+  'gif',
+  'tiff',
+  'bmp',
+  'ico',
+  'txt',
+  'docx',
+  'pptx',
+  'xlsx',
+  'md',
+  'html',
+  'epub',
+] as const;
 export type PdfSourceFormat = (typeof PDF_SOURCE_FORMATS)[number];
 
-export const MEDIA_SOURCE_FORMATS = ['mp4', 'wav'] as const;
+export const MEDIA_SOURCE_FORMATS = [
+  'mp4',
+  'mp3',
+  'wav',
+  'ogg',
+  'aac',
+  'm4a',
+  'mov',
+  'webm',
+  'mkv',
+  'gif',
+] as const;
 export type MediaSourceFormat = (typeof MEDIA_SOURCE_FORMATS)[number];
-export type MediaTargetFormat = 'mp3';
 
 export interface CategoryDefinition {
   id: CategoryId;
@@ -30,99 +80,168 @@ export interface CategoryDefinition {
 export const CATEGORIES: readonly CategoryDefinition[] = [
   {
     id: 'images',
-    label: 'Images',
+    label: 'Images & Vector',
     phase: 1,
     active: true,
-    description: 'Lossless & lossy raster conversion powered by libvips (sharp).',
-    formats: ['png', 'jpg', 'webp', 'avif'],
-    accept: '.png,.jpg,.jpeg,.webp,.avif,image/png,image/jpeg,image/webp,image/avif',
-  },
-  {
-    id: 'data',
-    label: 'Data/Text',
-    phase: 1,
-    active: true,
-    description: 'Streaming structured data, plain-text, and Excel transformations.',
-    formats: ['json', 'csv', 'txt', 'xlsx'],
-    accept: '.json,.csv,.txt,.xlsx,application/json,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    description: 'Lossless & lossy raster & vector conversion: PNG, JPG, JFIF, WEBP, AVIF, SVG, GIF, BMP, ICO, TIFF.',
+    formats: ['png', 'jpg', 'jfif', 'webp', 'avif', 'svg', 'gif', 'bmp', 'ico', 'tiff'],
+    accept:
+      '.png,.jpg,.jpeg,.jfif,.webp,.avif,.svg,.gif,.bmp,.ico,.tiff,.tif,image/png,image/jpeg,image/pjpeg,image/webp,image/avif,image/svg+xml,image/gif,image/bmp,image/x-icon,image/tiff',
   },
   {
     id: 'documents',
     label: 'Documents',
     phase: 2,
     active: true,
-    description: 'Stateless Office & Document suite: PDF, Word (DOCX), Slides (PPTX), Sheets (XLSX).',
-    formats: ['pdf', 'docx', 'pptx', 'xlsx'],
-    accept: '.pdf,.docx,.pptx,.xlsx,.txt,.png,.jpg,.jpeg,.webp,.avif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,text/plain',
+    description: 'Stateless Office & Document suite: PDF, Word (DOCX), Slides (PPTX), Sheets (XLSX), Markdown (MD), HTML, EPUB.',
+    formats: ['pdf', 'docx', 'pptx', 'xlsx', 'md', 'html', 'epub'],
+    accept:
+      '.pdf,.docx,.pptx,.xlsx,.md,.markdown,.html,.htm,.epub,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/markdown,text/html,application/epub+zip,text/plain',
+  },
+  {
+    id: 'data',
+    label: 'Data / Text',
+    phase: 1,
+    active: true,
+    description: 'Streaming structured data, plain-text, and Excel transformations: JSON, CSV, TXT, XLSX.',
+    formats: ['json', 'csv', 'txt', 'xlsx'],
+    accept:
+      '.json,.csv,.txt,.xlsx,application/json,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   },
   {
     id: 'media',
     label: 'Audio / Video',
     phase: 3,
     active: true,
-    description: 'Stateless MP4-to-MP3 & WAV-to-MP3 audio extraction via isolated FFmpeg.',
-    formats: ['mp4 -> mp3', 'wav -> mp3'],
-    accept: '.mp4,.wav,video/mp4,audio/mp4,audio/wav,audio/x-wav',
+    description: 'Audio extraction & transcoding: MP4, MP3, WAV, OGG, AAC, M4A, MOV, WEBM, MKV, GIF.',
+    formats: ['mp4', 'mp3', 'wav', 'ogg', 'aac', 'm4a', 'mov', 'webm', 'mkv'],
+    accept:
+      '.mp4,.mp3,.wav,.ogg,.aac,.m4a,.mov,.webm,.mkv,.gif,video/mp4,audio/mpeg,audio/wav,audio/x-wav,audio/ogg,audio/aac,audio/mp4,video/quicktime,video/webm,video/x-matroska,image/gif',
   },
 ] as const;
 
 export const FORMAT_ROUTES: Readonly<Record<string, readonly string[]>> = {
-  // Phase 1: Images (+ Phase 2: Image -> PDF, DOCX, PPTX)
-  png: ['webp', 'jpg', 'avif', 'pdf', 'docx', 'pptx'],
-  jpg: ['webp', 'png', 'avif', 'pdf', 'docx', 'pptx'],
-  webp: ['png', 'jpg', 'avif', 'pdf', 'docx', 'pptx'],
-  avif: ['webp', 'png', 'jpg', 'pdf', 'docx', 'pptx'],
-  // Phase 1: Data / Text (+ XLSX)
+  // 1. Images & Vector
+  png: ['webp', 'jpg', 'jfif', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  jpg: ['webp', 'png', 'jfif', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  jfif: ['jpg', 'png', 'webp', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  webp: ['png', 'jpg', 'jfif', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  avif: ['webp', 'png', 'jpg', 'jfif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  svg: ['png', 'jpg', 'jfif', 'webp', 'avif', 'pdf'],
+  gif: ['mp4', 'webp', 'png', 'jpg'],
+  bmp: ['png', 'jpg', 'webp'],
+  ico: ['png', 'jpg', 'webp'],
+  tiff: ['png', 'jpg', 'jfif', 'webp', 'avif', 'pdf'],
+
+  // 2. Data / Text
   json: ['csv', 'txt', 'xlsx'],
   csv: ['json', 'txt', 'xlsx'],
-  txt: ['json', 'csv', 'pdf'],
-  // Phase 2: Documents (PDF, DOCX, PPTX, XLSX)
-  docx: ['pdf', 'txt', 'html'],
-  pdf: ['docx', 'png', 'jpg', 'txt'],
-  xlsx: ['pdf', 'csv', 'json'],
-  pptx: ['pdf', 'txt'],
-  // Phase 3: Audio / Video
-  mp4: ['mp3'],
-  wav: ['mp3'],
+  txt: ['json', 'csv', 'pdf', 'docx', 'pptx'],
+
+  // 3. Documents (Office, Markdown, HTML, EPUB)
+  docx: ['pdf', 'pptx', 'txt', 'html'],
+  pdf: ['docx', 'pptx', 'png', 'jpg', 'jfif', 'txt'],
+  xlsx: ['pdf', 'pptx', 'csv', 'json'],
+  pptx: ['pdf', 'png', 'jpg', 'txt'],
+  md: ['html', 'pdf', 'docx', 'txt'],
+  html: ['pdf', 'docx', 'txt'],
+  epub: ['pdf', 'txt'],
+
+  // 4. Audio & Video
+  mp4: ['mp3', 'wav'],
+  mp3: ['wav', 'mp4'],
+  wav: ['mp3', 'mp4'],
+  ogg: ['mp3', 'wav'],
+  aac: ['mp3', 'wav'],
+  m4a: ['mp3', 'wav'],
+  mov: ['mp4', 'mp3', 'wav'],
+  webm: ['mp4', 'mp3', 'wav'],
+  mkv: ['mp4', 'mp3', 'wav'],
 };
 
 export const FORMAT_CATEGORY_MAP: Readonly<Record<string, CategoryId>> = {
+  // Images
   png: 'images',
   jpg: 'images',
+  jfif: 'images',
   webp: 'images',
   avif: 'images',
+  svg: 'images',
+  gif: 'images',
+  bmp: 'images',
+  ico: 'images',
+  tiff: 'images',
+
+  // Data
   json: 'data',
   csv: 'data',
   txt: 'data',
+
+  // Documents
   docx: 'documents',
   pdf: 'documents',
   xlsx: 'documents',
   pptx: 'documents',
+  md: 'documents',
+  html: 'documents',
+  epub: 'documents',
+
+  // Media
   mp4: 'media',
+  mp3: 'media',
   wav: 'media',
+  ogg: 'media',
+  aac: 'media',
+  m4a: 'media',
+  mov: 'media',
+  webm: 'media',
+  mkv: 'media',
 };
 
 export const MIME_TYPES: Readonly<Record<string, string>> = {
+  // Images
   png: 'image/png',
   jpg: 'image/jpeg',
+  jfif: 'image/jpeg',
   webp: 'image/webp',
   avif: 'image/avif',
+  svg: 'image/svg+xml',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  tiff: 'image/tiff',
+
+  // Data
   json: 'application/json; charset=utf-8',
   csv: 'text/csv; charset=utf-8',
   txt: 'text/plain; charset=utf-8',
+
+  // Documents
   pdf: 'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   html: 'text/html; charset=utf-8',
+  md: 'text/markdown; charset=utf-8',
+  epub: 'application/epub+zip',
+
+  // Media
   mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  mp4: 'video/mp4',
+  ogg: 'audio/ogg',
+  aac: 'audio/aac',
+  m4a: 'audio/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  mkv: 'video/x-matroska',
 };
 
 export const ALLOWED_OUTPUT_EXTENSIONS = Object.keys(MIME_TYPES);
 
 /**
  * Normalizes a filename or raw extension into a canonical lowercase format key.
- * Maps `.jpeg` -> `jpg`.
+ * Maps `.jpeg` -> `jpg`, `.tif` -> `tiff`, `.markdown` -> `md`, `.htm` -> `html`.
  */
 export function normalizeFormat(fileNameOrExt: string): string {
   const trimmed = fileNameOrExt.trim().toLowerCase();
@@ -131,6 +250,9 @@ export function normalizeFormat(fileNameOrExt: string): string {
     : trimmed;
 
   if (ext === 'jpeg') return 'jpg';
+  if (ext === 'tif') return 'tiff';
+  if (ext === 'markdown') return 'md';
+  if (ext === 'htm') return 'html';
   return ext;
 }
 
@@ -147,7 +269,6 @@ export function getTargetFormats(sourceFormat: string): readonly string[] {
  */
 export function buildOutputFileName(originalName: string, targetFormat: string): string {
   const cleanTarget = normalizeFormat(targetFormat);
-  // Strip any directory components and control/header-unsafe characters
   const base = originalName
     .replace(/^.*[\\/]/, '')
     .replace(/[^\w.\- ()[\]]+/g, '_')

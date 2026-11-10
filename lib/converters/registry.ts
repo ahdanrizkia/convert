@@ -57,7 +57,12 @@ for (const [source, targets] of Object.entries(FORMAT_ROUTES)) {
     let handler: ConverterHandler;
     let phase: 1 | 2 | 3 = 1;
 
-    if (category === 'media' || target === 'mp3') {
+    if (
+      category === 'media' ||
+      target === 'mp3' ||
+      target === 'wav' ||
+      (target === 'mp4' && source === 'gif')
+    ) {
       handler = convertMedia;
       phase = 3;
     } else if (
@@ -66,10 +71,15 @@ for (const [source, targets] of Object.entries(FORMAT_ROUTES)) {
       target === 'docx' ||
       target === 'pptx' ||
       target === 'xlsx' ||
+      target === 'html' ||
       source === 'docx' ||
       source === 'pdf' ||
       source === 'xlsx' ||
-      source === 'pptx'
+      source === 'pptx' ||
+      source === 'md' ||
+      source === 'html' ||
+      source === 'epub' ||
+      (source === 'txt' && (target === 'docx' || target === 'pptx'))
     ) {
       handler = convertDocument;
       phase = 2;

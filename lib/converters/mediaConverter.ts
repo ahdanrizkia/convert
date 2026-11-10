@@ -39,9 +39,7 @@ async function resolveFfmpegBinary(): Promise<string> {
   }
 
   const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-  candidates.push(
-    path.join(process.cwd(), 'node_modules', 'ffmpeg-static', exeName)
-  );
+  candidates.push(path.join(process.cwd(), 'node_modules', 'ffmpeg-static', exeName));
 
   for (const candidate of candidates) {
     if (await isExecutableFile(candidate)) {
@@ -55,7 +53,7 @@ async function resolveFfmpegBinary(): Promise<string> {
 function formatFfmpegError(stderrText: string, exitCode: number | null): string {
   const trimmed = stderrText.trim();
   if (/Output file does not contain any stream/i.test(trimmed)) {
-    return 'Input file does not contain an audio stream to extract.';
+    return 'Input file does not contain an audio/video stream to extract.';
   }
   if (/Invalid data found when processing input/i.test(trimmed)) {
     return 'Malformed or corrupted media file.';
@@ -71,30 +69,146 @@ function formatFfmpegError(stderrText: string, exitCode: number | null): string 
   return `FFmpeg exited with status code ${exitCode ?? 'unknown'}.`;
 }
 
-async function runFfmpegToMp3(inputPath: string, outputPath: string): Promise<void> {
+async function runFfmpegMediaConvert(
+  inputPath: string,
+  outputPath: string,
+  sourceFormat: string,
+  targetFormat: string
+): Promise<void> {
   const ffmpegBinary = await resolveFfmpegBinary();
+  let args: string[] = [];
 
-  const args = [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-nostdin',
-    '-y',
-    '-i',
-    inputPath,
-    '-vn',
-    '-sn',
-    '-dn',
-    '-map_metadata',
-    '-1',
-    '-c:a',
-    'libmp3lame',
-    '-b:a',
-    '192k',
-    '-f',
-    'mp3',
-    outputPath,
-  ];
+  if (targetFormat === 'mp3') {
+    args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-nostdin',
+      '-y',
+      '-i',
+      inputPath,
+      '-vn',
+      '-sn',
+      '-dn',
+      '-map_metadata',
+      '-1',
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      '320k',
+      '-qscale:a',
+      '0',
+      '-f',
+      'mp3',
+      outputPath,
+    ];
+  } else if (targetFormat === 'wav') {
+    args = [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-nostdin',
+      '-y',
+      '-i',
+      inputPath,
+      '-vn',
+      '-sn',
+      '-dn',
+      '-map_metadata',
+      '-1',
+      '-c:a',
+      'pcm_s16le',
+      '-f',
+      'wav',
+      outputPath,
+    ];
+  } else if (targetFormat === 'mp4') {
+    if (sourceFormat === 'gif') {
+      args = [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+        '-i',
+        inputPath,
+        '-c:v',
+        'libx264',
+        '-crf',
+        '18',
+        '-preset',
+        'medium',
+        '-movflags',
+        '+faststart',
+        '-pix_fmt',
+        'yuv420p',
+        '-vf',
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        outputPath,
+      ];
+    } else if (
+      sourceFormat === 'mp3' ||
+      sourceFormat === 'wav' ||
+      sourceFormat === 'ogg' ||
+      sourceFormat === 'aac' ||
+      sourceFormat === 'm4a'
+    ) {
+      args = [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black:s=1280x720:r=1',
+        '-i',
+        inputPath,
+        '-c:v',
+        'libx264',
+        '-tune',
+        'stillimage',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '320k',
+        '-pix_fmt',
+        'yuv420p',
+        '-shortest',
+        outputPath,
+      ];
+    } else {
+      args = [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+        '-i',
+        inputPath,
+        '-c:v',
+        'libx264',
+        '-crf',
+        '18',
+        '-preset',
+        'medium',
+        '-vf',
+        'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '256k',
+        '-movflags',
+        '+faststart',
+        outputPath,
+      ];
+    }
+  } else {
+    throw new Error(`Unsupported media target format: ${targetFormat}`);
+  }
 
   await new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegBinary, args, {
@@ -119,11 +233,10 @@ async function runFfmpegToMp3(inputPath: string, outputPath: string): Promise<vo
       try {
         child.kill('SIGKILL');
       } catch {
-        // Ignore if process already exited
+        // Ignore if already dead
       }
-      // Failsafe if 'close' event does not fire promptly after SIGKILL
       const forceResolve = setTimeout(() => {
-        finish(new Error('Audio conversion timed out after 120 seconds.'));
+        finish(new Error('Media conversion timed out after 120 seconds.'));
       }, 3000);
       if (typeof forceResolve.unref === 'function') {
         forceResolve.unref();
@@ -149,11 +262,9 @@ async function runFfmpegToMp3(inputPath: string, outputPath: string): Promise<vo
       finish(new Error(`Failed to spawn FFmpeg: ${err.message}`));
     });
 
-    // Wait strictly for 'close' so all `/tmp` file descriptors are released by the OS
-    // before `/api/convert` unlinks `inputPath` or stats `outputPath`.
     child.once('close', (code) => {
       if (timedOut) {
-        finish(new Error('Audio conversion timed out after 120 seconds.'));
+        finish(new Error('Media conversion timed out after 120 seconds.'));
         return;
       }
       if (code === 0) {
@@ -166,8 +277,7 @@ async function runFfmpegToMp3(inputPath: string, outputPath: string): Promise<vo
 }
 
 /**
- * Modular Phase 3 media converter handler (`MP4 -> MP3` and `WAV -> MP3`).
- * Reads from `/tmp/{uuid}-input.{ext}` and writes directly to `/tmp/{uuid}-output.mp3`.
+ * Universal media converter handler (`mp4`, `mp3`, `wav`, `ogg`, `aac`, `m4a`, `mov`, `webm`, `mkv`, `gif`).
  */
 export async function convertMedia(
   inputPath: string,
@@ -178,14 +288,14 @@ export async function convertMedia(
   const src = normalizeFormat(sourceFormat);
   const dst = normalizeFormat(targetFormat);
 
-  if (dst !== 'mp3' || !isMediaSourceFormat(src)) {
-    throw new Error(`Unsupported media conversion route: ${sourceFormat} -> ${targetFormat}`);
+  if (!isMediaSourceFormat(src)) {
+    throw new Error(`Unsupported media source format: ${sourceFormat}`);
   }
 
-  await runFfmpegToMp3(inputPath, outputPath);
+  await runFfmpegMediaConvert(inputPath, outputPath, src, dst);
 
   const stat = await fs.stat(outputPath);
   if (!stat.isFile() || stat.size === 0) {
-    throw new Error('FFmpeg produced an empty MP3 output file.');
+    throw new Error(`FFmpeg produced an empty output file for ${dst.toUpperCase()}.`);
   }
 }

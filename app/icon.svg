@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b" />
+      <stop offset="100%" stop-color="#09090b" />
+    </linearGradient>
+
+    <!-- Top Arrow Cyan/Blue Gradient -->
+    <linearGradient id="topArrowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#2563eb" />
+    </linearGradient>
+
+    <!-- Bottom Arrow Emerald/Teal Gradient -->
+    <linearGradient id="bottomArrowGrad" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" stop-color="#34d399" />
+      <stop offset="100%" stop-color="#059669" />
+    </linearGradient>
+
+    <!-- Center Accent Glow -->
+    <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect x="16" y="16" width="480" height="480" rx="112" ry="112" fill="url(#bgGrad)" stroke="#27272a" stroke-width="12" />
+
+  <!-- Subtle Ambient Glow -->
+  <circle cx="256" cy="256" r="180" fill="url(#centerGlow)" />
+
+  <!-- Top Arrow (Moving Right - Cyan/Blue) -->
+  <g fill="none" stroke="url(#topArrowGrad)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 136 196 H 340" />
+    <path d="M 284 140 L 340 196 L 284 252" />
+  </g>
+
+  <!-- Bottom Arrow (Moving Left - Emerald/Teal) -->
+  <g fill="none" stroke="url(#bottomArrowGrad)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 376 316 H 172" />
+    <path d="M 228 260 L 172 316 L 228 372" />
+  </g>
+
+  <!-- Tiny Tech/Speed Center Pulse Dot -->
+  <circle cx="256" cy="256" r="10" fill="#f8fafc" opacity="0.9" />
+</svg>
