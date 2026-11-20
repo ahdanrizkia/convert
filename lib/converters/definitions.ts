@@ -1,5 +1,9 @@
-export const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // Strict 50 MB limit
+export const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // Strict 50 MB limit per file
+export const MAX_MERGE_FILES = 50; // Up to 50 images merged into a single multi-page PDF
+export const MAX_MERGE_TOTAL_BYTES = 250 * 1024 * 1024; // Strict 250 MB total batch payload cap
 export const DEFAULT_TTL_MS = 180_000; // 3 minutes (180,000 ms) fallback abandonment timer
+
+export type PdfPageLayout = 'fit-image' | 'a4-fit' | 'original-px';
 
 export type CategoryId = 'images' | 'data' | 'documents' | 'media';
 
@@ -86,7 +90,7 @@ export const CATEGORIES: readonly CategoryDefinition[] = [
     description: 'Lossless & lossy raster & vector conversion: PNG, JPG, JFIF, WEBP, AVIF, SVG, GIF, BMP, ICO, TIFF.',
     formats: ['png', 'jpg', 'jfif', 'webp', 'avif', 'svg', 'gif', 'bmp', 'ico', 'tiff'],
     accept:
-      '.png,.jpg,.jpeg,.jfif,.webp,.avif,.svg,.gif,.bmp,.ico,.tiff,.tif,image/png,image/jpeg,image/pjpeg,image/webp,image/avif,image/svg+xml,image/gif,image/bmp,image/x-icon,image/tiff',
+      '.png,.jpg,.jpeg,.jfif,.webp,.avif,.avifs,.svg,.gif,.bmp,.ico,.tiff,.tif,image/png,image/jpeg,image/pjpeg,image/webp,image/avif,image/avif-sequence,image/svg+xml,image/gif,image/bmp,image/x-icon,image/tiff',
   },
   {
     id: 'documents',
@@ -96,7 +100,7 @@ export const CATEGORIES: readonly CategoryDefinition[] = [
     description: 'Stateless Office & Document suite: PDF, Word (DOCX), Slides (PPTX), Sheets (XLSX), Markdown (MD), HTML, EPUB.',
     formats: ['pdf', 'docx', 'pptx', 'xlsx', 'md', 'html', 'epub'],
     accept:
-      '.pdf,.docx,.pptx,.xlsx,.md,.markdown,.html,.htm,.epub,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/markdown,text/html,application/epub+zip,text/plain',
+      '.pdf,.docx,.pptx,.xlsx,.md,.markdown,.html,.htm,.epub,.txt,.png,.jpg,.jpeg,.jfif,.webp,.avif,.svg,.tiff,.tif,.bmp,.ico,.gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/markdown,text/html,application/epub+zip,text/plain,image/png,image/jpeg,image/webp,image/avif,image/svg+xml,image/tiff,image/bmp,image/x-icon,image/gif',
   },
   {
     id: 'data',
@@ -126,11 +130,11 @@ export const FORMAT_ROUTES: Readonly<Record<string, readonly string[]>> = {
   jpg: ['webp', 'png', 'jfif', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
   jfif: ['jpg', 'png', 'webp', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
   webp: ['png', 'jpg', 'jfif', 'avif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
-  avif: ['webp', 'png', 'jpg', 'jfif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
+  avif: ['jpg', 'png', 'webp', 'jfif', 'ico', 'bmp', 'tiff', 'pdf', 'docx', 'pptx'],
   svg: ['png', 'jpg', 'jfif', 'webp', 'avif', 'pdf'],
-  gif: ['mp4', 'webp', 'png', 'jpg'],
-  bmp: ['png', 'jpg', 'webp'],
-  ico: ['png', 'jpg', 'webp'],
+  gif: ['mp4', 'webp', 'png', 'jpg', 'pdf'],
+  bmp: ['png', 'jpg', 'webp', 'pdf'],
+  ico: ['png', 'jpg', 'webp', 'pdf'],
   tiff: ['png', 'jpg', 'jfif', 'webp', 'avif', 'pdf'],
 
   // 2. Data / Text
@@ -253,6 +257,7 @@ export function normalizeFormat(fileNameOrExt: string): string {
   if (ext === 'tif') return 'tiff';
   if (ext === 'markdown') return 'md';
   if (ext === 'htm') return 'html';
+  if (ext === 'avifs') return 'avif';
   return ext;
 }
 
@@ -278,6 +283,38 @@ export function buildOutputFileName(originalName: string, targetFormat: string):
   const stem = dotIdx > 0 ? base.slice(0, dotIdx) : base || 'converted';
   const truncatedStem = stem.slice(0, 120);
   return `${truncatedStem}.${cleanTarget}`;
+}
+
+export const PDF_MERGEABLE_IMAGE_FORMATS = new Set<string>([
+  'png',
+  'jpg',
+  'jfif',
+  'webp',
+  'avif',
+  'svg',
+  'gif',
+  'bmp',
+  'ico',
+  'tiff',
+]);
+
+export function isPdfMergeableImageFormat(format: string): boolean {
+  return PDF_MERGEABLE_IMAGE_FORMATS.has(normalizeFormat(format));
+}
+
+/**
+ * Produces a clean download filename for a multi-image merged PDF.
+ */
+export function buildMergedPdfFileName(fileNames: readonly string[]): string {
+  const first = fileNames[0] ?? 'merged';
+  const base = first
+    .replace(/^.*[\\/]/, '')
+    .replace(/[^\w.\- ()[\]]+/g, '_')
+    .trim();
+  const dotIdx = base.lastIndexOf('.');
+  const stem = (dotIdx > 0 ? base.slice(0, dotIdx) : base || 'images').slice(0, 80);
+  const count = Math.max(1, fileNames.length);
+  return count > 1 ? `${stem}-merged-${count}p.pdf` : `${stem}.pdf`;
 }
 
 /**

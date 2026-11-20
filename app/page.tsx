@@ -6,10 +6,15 @@ import {
   DEFAULT_TTL_MS,
   FORMAT_CATEGORY_MAP,
   MAX_FILE_SIZE_BYTES,
+  MAX_MERGE_FILES,
+  MAX_MERGE_TOTAL_BYTES,
+  buildMergedPdfFileName,
   formatBytes,
   getTargetFormats,
+  isPdfMergeableImageFormat,
   normalizeFormat,
   type CategoryId,
+  type PdfPageLayout,
 } from '@/lib/converters/definitions';
 
 type RowStatus =
@@ -93,6 +98,7 @@ export default function EphemeralConverterPage() {
   const [activeTab, setActiveTab] = useState<CategoryId>('images');
   const [items, setItems] = useState<FileQueueItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [pdfMergeLayout, setPdfMergeLayout] = useState<PdfPageLayout>('fit-image');
   const [now, setNow] = useState<number>(Date.now());
 
   const hasConverting = items.some((i) => i.status === 'converting');
@@ -256,7 +262,7 @@ export default function EphemeralConverterPage() {
       }
     }
 
-    setItems((prev) => [...newRows, ...prev]);
+    setItems((prev) => [...prev, ...newRows]);
   }, [activeTab]);
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -289,6 +295,44 @@ export default function EphemeralConverterPage() {
   const handleRemoveRow = (rowId: string) => {
     clearClientTtlTimer(rowId);
     setItems((prev) => prev.filter((row) => row.id !== rowId));
+  };
+
+  const handleMoveRow = (rowId: string, direction: -1 | 1) => {
+    setItems((prev) => {
+      const index = prev.findIndex((r) => r.id === rowId);
+      if (index === -1) return prev;
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const handleSortReadyByName = () => {
+    setItems((prev) => {
+      const readyIndices: number[] = [];
+      const readyItems: FileQueueItem[] = [];
+      prev.forEach((item, idx) => {
+        if (item.status === 'ready') {
+          readyIndices.push(idx);
+          readyItems.push(item);
+        }
+      });
+      if (readyItems.length < 2) return prev;
+      readyItems.sort((a, b) =>
+        a.fileName.localeCompare(b.fileName, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        })
+      );
+      const next = [...prev];
+      readyIndices.forEach((pos, i) => {
+        next[pos] = readyItems[i];
+      });
+      return next;
+    });
   };
 
   const handleClearAll = () => {
@@ -385,6 +429,172 @@ export default function EphemeralConverterPage() {
     }
   };
 
+  const handleMergeImagesToPdf = async () => {
+    const mergeRows = items.filter(
+      (r) =>
+        r.status === 'ready' &&
+        r.file !== null &&
+        isPdfMergeableImageFormat(r.sourceFormat)
+    );
+    if (mergeRows.length < 2) return;
+
+    const mergedId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    const filesToMerge = mergeRows.map((r) => r.file as File);
+    const fileNames = mergeRows.map((r) => r.fileName);
+    const totalOriginalSize = mergeRows.reduce((acc, r) => acc + r.originalSize, 0);
+    const mergedDisplayName = `${buildMergedPdfFileName(fileNames)} (${mergeRows.length} pages)`;
+    const startMs = Date.now();
+
+    if (mergeRows.length > MAX_MERGE_FILES) {
+      const errRow: FileQueueItem = {
+        id: mergedId,
+        file: null,
+        fileName: mergedDisplayName,
+        originalSize: totalOriginalSize,
+        convertedSize: null,
+        sourceFormat: `${mergeRows.length} IMAGES`,
+        targetFormat: 'pdf',
+        availableTargets: ['pdf'],
+        status: 'error',
+        jobId: null,
+        outputFileName: null,
+        errorMessage: `Max ${MAX_MERGE_FILES} images per merge`,
+        startTime: null,
+        elapsedFinal: null,
+      };
+      setItems((prev) => [errRow, ...prev]);
+      return;
+    }
+
+    if (totalOriginalSize > MAX_MERGE_TOTAL_BYTES) {
+      const errRow: FileQueueItem = {
+        id: mergedId,
+        file: null,
+        fileName: mergedDisplayName,
+        originalSize: totalOriginalSize,
+        convertedSize: null,
+        sourceFormat: `${mergeRows.length} IMAGES`,
+        targetFormat: 'pdf',
+        availableTargets: ['pdf'],
+        status: 'error',
+        jobId: null,
+        outputFileName: null,
+        errorMessage: 'Batch exceeds 250 MB total limit',
+        startTime: null,
+        elapsedFinal: null,
+      };
+      setItems((prev) => [errRow, ...prev]);
+      return;
+    }
+
+    const mergeRowIds = new Set(mergeRows.map((r) => r.id));
+    const mergedQueueItem: FileQueueItem = {
+      id: mergedId,
+      file: null,
+      fileName: mergedDisplayName,
+      originalSize: totalOriginalSize,
+      convertedSize: null,
+      sourceFormat: `${mergeRows.length} IMAGES`,
+      targetFormat: 'pdf',
+      availableTargets: ['pdf'],
+      status: 'converting',
+      jobId: null,
+      outputFileName: null,
+      errorMessage: null,
+      startTime: startMs,
+      elapsedFinal: null,
+    };
+
+    // Collapse the individual image rows into the single merged PDF conversion job row
+    setItems((prev) => {
+      const next: FileQueueItem[] = [];
+      let inserted = false;
+      for (const row of prev) {
+        if (mergeRowIds.has(row.id)) {
+          if (!inserted) {
+            next.push(mergedQueueItem);
+            inserted = true;
+          }
+        } else {
+          next.push(row);
+        }
+      }
+      if (!inserted) {
+        next.unshift(mergedQueueItem);
+      }
+      return next;
+    });
+
+    try {
+      const formData = new FormData();
+      formData.append('mode', 'merge-pdf');
+      formData.append('layout', pdfMergeLayout);
+      for (const file of filesToMerge) {
+        formData.append('files', file);
+      }
+
+      const response = await fetch('/api/convert', {
+        method: 'POST',
+        headers: {
+          'x-convert-mode': 'merge-pdf',
+        },
+        body: formData,
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `PDF merge failed (${response.status})`);
+      }
+
+      const elapsedSec = ((Date.now() - startMs) / 1000).toFixed(1) + 's';
+
+      setItems((prev) =>
+        prev.map((r) =>
+          r.id === mergedId
+            ? {
+                ...r,
+                file: null,
+                fileName: payload.outputFileName
+                  ? `${payload.outputFileName} (${filesToMerge.length} pages)`
+                  : r.fileName,
+                status: 'done',
+                jobId: payload.jobId,
+                outputFileName: payload.outputFileName,
+                convertedSize:
+                  typeof payload.convertedSize === 'number'
+                    ? payload.convertedSize
+                    : null,
+                errorMessage: null,
+                elapsedFinal: elapsedSec,
+              }
+            : r
+        )
+      );
+
+      startClientTtlTimer(mergedId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'PDF merge failed';
+      setItems((prev) =>
+        prev.map((r) =>
+          r.id === mergedId
+            ? {
+                ...r,
+                file: null,
+                status: 'error',
+                errorMessage: msg,
+                elapsedFinal: null,
+              }
+            : r
+        )
+      );
+    }
+  };
+
   const handleDownloadRow = async (rowId: string) => {
     const targetRow = items.find((r) => r.id === rowId);
     if (!targetRow || targetRow.status !== 'done' || !targetRow.jobId) return;
@@ -468,6 +678,16 @@ export default function EphemeralConverterPage() {
   };
 
   const readyCount = items.filter((r) => r.status === 'ready').length;
+  const mergeableImageRows = items.filter(
+    (r) =>
+      r.status === 'ready' &&
+      r.file !== null &&
+      isPdfMergeableImageFormat(r.sourceFormat)
+  );
+  const mergeableImageOrderMap = new Map<string, number>();
+  mergeableImageRows.forEach((row, idx) => {
+    mergeableImageOrderMap.set(row.id, idx + 1);
+  });
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-10">
@@ -494,7 +714,7 @@ export default function EphemeralConverterPage() {
         </p>
 
         <p className="mt-2.5 border-t border-neutral-200 pt-2 text-xs leading-relaxed text-neutral-800 sm:text-sm">
-          <span className="font-semibold text-neutral-950">Petunjuk:</span> Cukup unggah atau drop file Anda (misal pilih tab <strong>[Documents]</strong> untuk <code className="font-mono font-semibold text-neutral-900">.docx</code>). Format tujuan konversi seperti <span className="font-mono font-semibold text-neutral-900">DOCX &rarr; PDF</span> dapat langsung dipilih pada daftar antrean di bawah.
+          <span className="font-semibold text-neutral-950">Petunjuk:</span> Unggah atau drag &amp; drop file Anda (misal pilih tab <strong>[Documents]</strong> untuk <code className="font-mono font-semibold text-neutral-900">.docx</code>). Jika Anda drag lebih dari 1 gambar (<code className="font-mono font-semibold text-neutral-900">PNG</code>, <code className="font-mono font-semibold text-neutral-900">JPG</code>, <code className="font-mono font-semibold text-neutral-900">WEBP</code>, dll.), Anda dapat mengonversinya satu per satu atau menggabungkannya menjadi <strong>1 file PDF multi-halaman</strong> lewat tombol <span className="font-mono font-semibold text-neutral-900">Merge to 1 PDF</span> di antrean.
         </p>
       </header>
 
@@ -646,7 +866,17 @@ export default function EphemeralConverterPage() {
           </div>
 
           {items.length > 0 && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {readyCount > 1 && (
+                <button
+                  type="button"
+                  onClick={handleSortReadyByName}
+                  title="Urutkan nama file A-Z (natural numeric sort: 1, 2, ..., 10)"
+                  className="border border-neutral-400 bg-white px-2.5 py-1 font-mono text-xs text-neutral-800 hover:border-neutral-950"
+                >
+                  Sort A-Z
+                </button>
+              )}
               {readyCount > 1 && (
                 <button
                   type="button"
@@ -667,22 +897,103 @@ export default function EphemeralConverterPage() {
           )}
         </div>
 
+        {/* Multi-Image to Single PDF High-Accuracy Merge Toolbar */}
+        {mergeableImageRows.length >= 2 && (
+          <div className="flex flex-col gap-2.5 border-b border-neutral-900 bg-neutral-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="border border-neutral-950 bg-neutral-950 px-1.5 py-0.5 font-mono text-[11px] font-bold text-white">
+                MULTI-IMAGE &rarr; 1 PDF
+              </span>
+              <span className="text-xs text-neutral-800">
+                Gabungkan <strong>{mergeableImageRows.length} gambar</strong> sesuai urutan{' '}
+                <span className="font-mono font-semibold">
+                  (#1 &rarr; #{mergeableImageRows.length})
+                </span>{' '}
+                menjadi 1 dokumen PDF lossless/akurasi tinggi.
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
+              <label className="inline-flex items-center gap-1.5 font-mono text-xs text-neutral-700">
+                <span>Layout:</span>
+                <select
+                  aria-label="Merged PDF page layout mode"
+                  value={pdfMergeLayout}
+                  onChange={(e) => setPdfMergeLayout(e.target.value as PdfPageLayout)}
+                  className="border border-neutral-400 bg-white px-2 py-1 font-mono text-xs font-semibold text-neutral-950 focus:border-neutral-950 focus:outline-none"
+                >
+                  <option value="fit-image">
+                    Full-Bleed (Rasio Asli · Lebar Seragam)
+                  </option>
+                  <option value="original-px">
+                    Native 1:1 (Ukuran Piksel Asli)
+                  </option>
+                  <option value="a4-fit">
+                    Kertas A4 (Auto Portrait/Landscape)
+                  </option>
+                </select>
+              </label>
+
+              <button
+                type="button"
+                onClick={handleMergeImagesToPdf}
+                className="border border-neutral-950 bg-neutral-950 px-3 py-1 font-mono text-xs font-bold text-white hover:bg-neutral-800"
+              >
+                Merge to 1 PDF ({mergeableImageRows.length} Pages)
+              </button>
+            </div>
+          </div>
+        )}
+
         {items.length === 0 ? (
           <div className="px-4 py-8 text-center font-mono text-xs text-neutral-500">
             No files queued. Select Images, Office Documents (PDF, DOCX, PPTX, XLSX), Data, or Audio/Video files above.
           </div>
         ) : (
           <ul className="divide-y divide-neutral-200">
-            {items.map((row) => {
+            {items.map((row, rowIndex) => {
               const statusBadge = getStatusBadgeConfig(row, now);
+              const mergePageNum = mergeableImageOrderMap.get(row.id);
 
               return (
                 <li
                   key={row.id}
                   className="relative flex flex-col gap-2.5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 overflow-hidden"
                 >
-                  {/* 1. File Name (cleanly truncated with ellipsis) + 2. Formatted File Size */}
-                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                  {/* 1. Page Order Badge / Reorder Controls + File Name + Formatted File Size */}
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                    {mergePageNum !== undefined && mergeableImageRows.length >= 2 && (
+                      <span
+                        title={`Halaman #${mergePageNum} saat digabung ke PDF`}
+                        className="shrink-0 border border-neutral-900 bg-neutral-100 px-1.5 py-0.5 font-mono text-[11px] font-bold text-neutral-950"
+                      >
+                        #{mergePageNum}
+                      </span>
+                    )}
+                    {row.status === 'ready' && items.length > 1 && (
+                      <div className="inline-flex shrink-0 items-center border border-neutral-300 bg-white">
+                        <button
+                          type="button"
+                          disabled={rowIndex === 0}
+                          onClick={() => handleMoveRow(row.id, -1)}
+                          title="Geser urutan ke atas"
+                          aria-label={`Move ${row.fileName} up`}
+                          className="px-1.5 py-0.5 font-mono text-xs text-neutral-800 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-300"
+                        >
+                          &uarr;
+                        </button>
+                        <button
+                          type="button"
+                          disabled={rowIndex === items.length - 1}
+                          onClick={() => handleMoveRow(row.id, 1)}
+                          title="Geser urutan ke bawah"
+                          aria-label={`Move ${row.fileName} down`}
+                          className="border-l border-neutral-300 px-1.5 py-0.5 font-mono text-xs text-neutral-800 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-300"
+                        >
+                          &darr;
+                        </button>
+                      </div>
+                    )}
                     <span
                       title={row.fileName}
                       className="truncate text-sm font-medium text-neutral-950"

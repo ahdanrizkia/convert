@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import sharp from 'sharp';
 import { normalizeFormat } from './definitions';
 import { convertImageToPdf, convertTxtToPdf } from './pdfConverter';
+import { resolveFfmpegBinary } from './imageConverter';
 import type { PDFFont, PDFImage, PDFPage, RGB } from 'pdf-lib';
 
 // Keep libvips memory flat
@@ -115,6 +116,30 @@ function wrapLine(
    1. Images to Office/PDF (JPG, JFIF, PNG, WEBP, AVIF -> PDF, DOCX, PPTX)
    ========================================================================== */
 
+async function transcodeBufferToPng(inputPath: string, buffer: Uint8Array): Promise<Uint8Array> {
+  try {
+    return new Uint8Array(await sharp(buffer, { failOn: 'none' }).png({ compressionLevel: 6 }).toBuffer());
+  } catch {
+    const { spawn } = await import('node:child_process');
+    const ffmpegBin = resolveFfmpegBinary();
+    const pngChunks: Buffer[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        ffmpegBin,
+        ['-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath, '-f', 'image2pipe', '-vcodec', 'png', '-'],
+        { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
+      );
+      child.stdout.on('data', (d: Buffer) => pngChunks.push(d));
+      child.once('error', reject);
+      child.once('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error('FFmpeg failed to transcode image for document'));
+      });
+    });
+    return new Uint8Array(Buffer.concat(pngChunks));
+  }
+}
+
 async function convertImageToDocx(
   inputPath: string,
   outputPath: string,
@@ -128,11 +153,11 @@ async function convertImageToDocx(
 
   // Transcode webp/avif to png for Word OpenXML compatibility
   if (ext === 'webp' || ext === 'avif') {
-    imgBuffer = new Uint8Array(await sharp(imgBuffer).png({ compressionLevel: 6 }).toBuffer());
+    imgBuffer = await transcodeBufferToPng(inputPath, imgBuffer);
     ext = 'png';
   }
 
-  const meta = await sharp(imgBuffer).metadata();
+  const meta = await sharp(imgBuffer, { failOn: 'none' }).metadata();
   const rawW = meta.width ?? 600;
   const rawH = meta.height ?? 400;
 
@@ -177,11 +202,11 @@ async function convertImageToPptx(
     sourceFormat === 'jpg' || sourceFormat === 'jfif' ? 'image/jpeg' : 'image/png';
 
   if (sourceFormat === 'webp' || sourceFormat === 'avif') {
-    imgBuffer = new Uint8Array(await sharp(imgBuffer).png({ compressionLevel: 6 }).toBuffer());
+    imgBuffer = await transcodeBufferToPng(inputPath, imgBuffer);
     mimeType = 'image/png';
   }
 
-  const meta = await sharp(imgBuffer).metadata();
+  const meta = await sharp(imgBuffer, { failOn: 'none' }).metadata();
   const rawW = meta.width || 800;
   const rawH = meta.height || 600;
   const imgRatio = rawW / rawH;

@@ -62,6 +62,22 @@ export function getTempInputPath(jobId: string, sourceFormat: string): string {
 }
 
 /**
+ * Resolves an indexed temporary batch input path in os.tmpdir(): `/tmp/{uuid}-input-{idx}.{ext}`
+ */
+export function getTempBatchInputPath(
+  jobId: string,
+  index: number,
+  sourceFormat: string
+): string {
+  if (!isValidUuid(jobId)) {
+    throw new Error('Invalid cryptographic job UUID.');
+  }
+  const safeIdx = Math.max(0, Math.floor(Number(index) || 0));
+  const safeExt = sourceFormat.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return path.join(os.tmpdir(), `${jobId}-input-${safeIdx}.${safeExt}`);
+}
+
+/**
  * Resolves a temporary output path in os.tmpdir(): `/tmp/{uuid}-output.{ext}`
  */
 export function getTempOutputPath(jobId: string, targetFormat: string): string {

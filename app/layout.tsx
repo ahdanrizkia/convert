@@ -7,12 +7,11 @@ export const metadata: Metadata = {
     'Zero-database, zero-persistence, ultra-lightweight web file converter with immediate post-download server deletion.',
   icons: {
     icon: [
-      { url: '/favicon.ico', sizes: 'any' },
-      { url: '/icon.svg', type: 'image/svg+xml' },
-      { url: '/icon-32.png', type: 'image/png', sizes: '32x32' },
-      { url: '/icon-192.png', type: 'image/png', sizes: '192x192' },
+      { url: '/favicon.png?v=2', type: 'image/png' },
+      { url: '/favicon.png', type: 'image/png', sizes: 'any' },
     ],
-    apple: [{ url: '/apple-icon.png', sizes: '180x180', type: 'image/png' }],
+    shortcut: [{ url: '/favicon.png?v=2', type: 'image/png' }],
+    apple: [{ url: '/favicon.png?v=2', type: 'image/png' }],
   },
 };
 

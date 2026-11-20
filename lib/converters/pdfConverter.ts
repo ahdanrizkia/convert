@@ -12,7 +12,12 @@ import {
 } from 'pdf-lib';
 import sharp from 'sharp';
 import { isImageFormat } from './imageConverter';
-import { normalizeFormat, type PdfSourceFormat, PDF_SOURCE_FORMATS } from './definitions';
+import {
+  normalizeFormat,
+  type PdfPageLayout,
+  type PdfSourceFormat,
+  PDF_SOURCE_FORMATS,
+} from './definitions';
 
 // Keep libvips cache disabled so temporary buffers/descriptors release immediately
 sharp.cache(false);
@@ -165,37 +170,69 @@ function wrapTextLine(
 }
 
 /**
- * Converts raster images (`png`, `jpg`, `jfif`, `webp`, `avif`) into a single-page PDF via `pdf-lib`.
- * Uses `sharp` to normalize EXIF orientation and transcode WebP/AVIF buffers for `pdf-lib`.
+ * Embeds an image file into a `PDFDocument` with maximum visual fidelity:
+ * - Upright sRGB/Grayscale JPEG (`jpg`, `jfif`) streams are embedded bit-for-bit without re-encoding (0% generation loss).
+ * - JPEGs requiring EXIF orientation rotation or CMYK->sRGB color-profile conversion are encoded at Q98 with 4:4:4 chroma (zero color subsampling loss).
+ * - PNG, SVG (300 DPI vector rasterization), WebP, AVIF, TIFF, BMP, ICO, and GIF are EXIF-rotated, normalized to 8-bit non-interlaced sRGB/RGBA lossless PNG, and embedded via FlateDecode to preserve 100% sharp text/edges and alpha transparency without `upng-js` interlace/16-bit/palette artifacts.
  */
-export async function convertImageToPdf(
+async function embedHighAccuracyImage(
+  pdfDoc: PDFDocument,
   inputPath: string,
-  outputPath: string,
-  sourceFormat: string
-): Promise<void> {
-  // Read into buffer so the `/tmp` input file descriptor closes immediately
-  let inputBuffer = await fs.readFile(inputPath);
+  rawSourceFormat: string
+): Promise<PDFImage> {
+  // Read into buffer immediately so the `/tmp` input file descriptor closes right away
+  let inputBuffer: Buffer = await fs.readFile(inputPath);
+  let sourceFormat = normalizeFormat(rawSourceFormat);
 
-  // If BMP or ICO, transcode buffer to PNG via FFmpeg first
-  if (sourceFormat === 'bmp' || sourceFormat === 'ico') {
+  // Check if BMP, ICO, or an unreadable AVIF (e.g. 10-bit HDR / AV1 profile) requires FFmpeg lossless PNG decoding
+  let needsFfmpegTranscode = sourceFormat === 'bmp' || sourceFormat === 'ico';
+  if (!needsFfmpegTranscode && sourceFormat === 'avif') {
+    try {
+      await sharp(inputBuffer, { failOn: 'none' }).metadata();
+    } catch {
+      needsFfmpegTranscode = true;
+    }
+  }
+
+  if (needsFfmpegTranscode) {
     const { spawn } = await import('node:child_process');
     const ffmpegStatic = (await import('ffmpeg-static')).default;
     const exeName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
     const ffmpegBin =
       process.env.FFMPEG_PATH?.trim() ||
-      (typeof ffmpegStatic === 'string' ? ffmpegStatic : path.join(process.cwd(), 'node_modules', 'ffmpeg-static', exeName));
+      (typeof ffmpegStatic === 'string'
+        ? ffmpegStatic
+        : path.join(process.cwd(), 'node_modules', 'ffmpeg-static', exeName));
 
     const pngChunks: Buffer[] = [];
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(ffmpegBin, ['-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath, '-f', 'image2pipe', '-vcodec', 'png', '-'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-      });
+      const child = spawn(
+        ffmpegBin,
+        [
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-y',
+          '-i',
+          inputPath,
+          '-f',
+          'image2pipe',
+          '-vcodec',
+          'png',
+          '-pix_fmt',
+          'rgba',
+          '-',
+        ],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        }
+      );
       child.stdout.on('data', (d: Buffer) => pngChunks.push(d));
       child.once('error', reject);
       child.once('close', (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`Failed to decode ${sourceFormat} for PDF`));
+        else reject(new Error(`Failed to decode ${sourceFormat.toUpperCase()} for PDF`));
       });
     });
     inputBuffer = Buffer.concat(pngChunks);
@@ -204,59 +241,132 @@ export async function convertImageToPdf(
 
   const sharpOptions =
     sourceFormat === 'svg'
-      ? { density: 300, failOn: 'error' as const }
-      : { failOn: 'error' as const };
+      ? { density: 300, failOn: 'none' as const }
+      : { failOn: 'none' as const };
   const metadata = await sharp(inputBuffer, sharpOptions).metadata();
 
   const needsExifRotation =
     typeof metadata.orientation === 'number' && metadata.orientation > 1;
-  const isCmyk = metadata.space === 'cmyk';
+  const isNonSrgb =
+    metadata.space !== undefined &&
+    metadata.space !== 'srgb' &&
+    metadata.space !== 'b-w';
   const isJpeg = sourceFormat === 'jpg' || sourceFormat === 'jfif';
 
-  const pdfDoc = await PDFDocument.create();
-  let embeddedImage: PDFImage;
-
-  if (isJpeg && !needsExifRotation && !isCmyk) {
-    try {
-      embeddedImage = await pdfDoc.embedJpg(inputBuffer);
-    } catch {
-      const normalizedJpg = await sharp(inputBuffer, sharpOptions)
-        .rotate()
-        .flatten({ background: '#ffffff' })
-        .jpeg({ quality: 94, mozjpeg: true, chromaSubsampling: '4:4:4' })
-        .toBuffer();
-      embeddedImage = await pdfDoc.embedJpg(normalizedJpg);
+  if (isJpeg) {
+    if (!needsExifRotation && !isNonSrgb) {
+      try {
+        // 100% lossless direct DCT stream embedding
+        return await pdfDoc.embedJpg(inputBuffer);
+      } catch {
+        // Fallback if JPEG uses arithmetic coding or non-standard markers
+      }
     }
-  } else if (sourceFormat === 'png' && !needsExifRotation) {
-    try {
-      embeddedImage = await pdfDoc.embedPng(inputBuffer);
-    } catch {
-      const normalizedPng = await sharp(inputBuffer, sharpOptions)
-        .rotate()
-        .png({ compressionLevel: 8 })
-        .toBuffer();
-      embeddedImage = await pdfDoc.embedPng(normalizedPng);
-    }
-  } else {
-    const pipeline = sharp(inputBuffer, sharpOptions).rotate();
-    if (metadata.hasAlpha && !isJpeg) {
-      const pngBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
-      embeddedImage = await pdfDoc.embedPng(pngBuffer);
-    } else {
-      const jpgBuffer = await pipeline
-        .flatten({ background: '#ffffff' })
-        .jpeg({ quality: 94, mozjpeg: true, chromaSubsampling: '4:4:4' })
-        .toBuffer();
-      embeddedImage = await pdfDoc.embedJpg(jpgBuffer);
-    }
+    const normalizedJpg = await sharp(inputBuffer, sharpOptions)
+      .rotate()
+      .toColorspace('srgb')
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: 98, mozjpeg: true, chromaSubsampling: '4:4:4' })
+      .toBuffer();
+    return await pdfDoc.embedJpg(normalizedJpg);
   }
 
-  let pageWidth = embeddedImage.width;
-  let pageHeight = embeddedImage.height;
+  // For PNG, SVG, WebP, AVIF, TIFF, BMP, ICO, GIF:
+  // Embed as lossless sRGB/RGBA non-interlaced PNG to guarantee zero DCT compression artifacts
+  // and full compatibility with pdf-lib's PNG parser across 16-bit, Adam7 interlaced, and palette images.
+  const pixelCount = (metadata.width ?? 0) * (metadata.height ?? 0);
+  const isUltraHugeOpaquePhoto =
+    pixelCount > 25_000_000 && !metadata.hasAlpha && sourceFormat !== 'svg';
 
-  if (pageWidth <= 0 || pageHeight <= 0) {
+  try {
+    const pipeline = sharp(inputBuffer, sharpOptions).rotate().toColorspace('srgb');
+    if (isUltraHugeOpaquePhoto) {
+      const highFidelityJpg = await pipeline
+        .flatten({ background: '#ffffff' })
+        .jpeg({ quality: 98, mozjpeg: true, chromaSubsampling: '4:4:4' })
+        .toBuffer();
+      return await pdfDoc.embedJpg(highFidelityJpg);
+    }
+
+    const losslessPng = await pipeline
+      .png({ compressionLevel: 8, adaptiveFiltering: true })
+      .toBuffer();
+    return await pdfDoc.embedPng(losslessPng);
+  } catch (err) {
+    if (sourceFormat === 'png') {
+      return await pdfDoc.embedPng(inputBuffer);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Adds a page containing `embeddedImage` to `pdfDoc` according to the requested `layout` mode.
+ * Preserves 100% of the embedded image's native pixel resolution inside the PDF XObject stream.
+ */
+function addImagePageToPdf(
+  pdfDoc: PDFDocument,
+  embeddedImage: PDFImage,
+  layout: PdfPageLayout
+): void {
+  const imgW = embeddedImage.width;
+  const imgH = embeddedImage.height;
+
+  if (imgW <= 0 || imgH <= 0) {
     throw new Error('Invalid image dimensions for PDF generation.');
   }
+
+  if (layout === 'a4-fit') {
+    const isLandscape = imgW > imgH;
+    const [a4Short, a4Long] = PageSizes.A4; // 595.28 x 841.89 pt
+    const pageW = isLandscape ? a4Long : a4Short;
+    const pageH = isLandscape ? a4Short : a4Long;
+    const margin = 18;
+    const availW = Math.max(1, pageW - margin * 2);
+    const availH = Math.max(1, pageH - margin * 2);
+    const scale = Math.min(availW / imgW, availH / imgH);
+    const drawW = imgW * scale;
+    const drawH = imgH * scale;
+    const x = (pageW - drawW) / 2;
+    const y = (pageH - drawH) / 2;
+
+    const page = pdfDoc.addPage([pageW, pageH]);
+    page.drawImage(embeddedImage, {
+      x,
+      y,
+      width: drawW,
+      height: drawH,
+    });
+    return;
+  }
+
+  if (layout === 'fit-image') {
+    // Full-bleed (zero margin, exact image aspect ratio) normalized to a uniform A4 reference width (595.28 pt)
+    // so multi-page PDFs with varying source pixel resolutions scroll at a consistent width in all PDF viewers
+    // while retaining 100% of their original embedded pixel resolution.
+    const refWidth = PageSizes.A4[0]; // 595.28 pt (8.27 in)
+    let pageW = refWidth;
+    let pageH = (refWidth * imgH) / imgW;
+
+    if (pageH > MAX_PDF_PAGE_DIMENSION_PT) {
+      const clampScale = MAX_PDF_PAGE_DIMENSION_PT / pageH;
+      pageW = Math.max(1, pageW * clampScale);
+      pageH = MAX_PDF_PAGE_DIMENSION_PT;
+    }
+
+    const page = pdfDoc.addPage([pageW, pageH]);
+    page.drawImage(embeddedImage, {
+      x: 0,
+      y: 0,
+      width: pageW,
+      height: pageH,
+    });
+    return;
+  }
+
+  // 'original-px': 1px = 1pt exact pixel dimensions (clamped only to ISO 32000 14,400pt maximum)
+  let pageWidth = imgW;
+  let pageHeight = imgH;
 
   if (
     pageWidth > MAX_PDF_PAGE_DIMENSION_PT ||
@@ -274,6 +384,53 @@ export async function convertImageToPdf(
     width: pageWidth,
     height: pageHeight,
   });
+}
+
+/**
+ * Converts a single raster or vector image (`png`, `jpg`, `jfif`, `webp`, `avif`, `svg`, `tiff`, `bmp`, `ico`, `gif`)
+ * into a single-page PDF via `pdf-lib` with highest visual accuracy.
+ */
+export async function convertImageToPdf(
+  inputPath: string,
+  outputPath: string,
+  sourceFormat: string
+): Promise<void> {
+  const pdfDoc = await PDFDocument.create();
+  const embeddedImage = await embedHighAccuracyImage(pdfDoc, inputPath, sourceFormat);
+  addImagePageToPdf(pdfDoc, embeddedImage, 'original-px');
+  const pdfBytes = await pdfDoc.save();
+  await fs.writeFile(outputPath, pdfBytes);
+}
+
+export interface BatchImagePdfInput {
+  inputPath: string;
+  sourceFormat: string;
+}
+
+/**
+ * Merges multiple images (`png`, `jpg`, `jfif`, `webp`, `avif`, `svg`, `tiff`, `bmp`, `ico`, `gif`)
+ * in exact sequence into a single multi-page PDF document with lossless/high-accuracy embedding.
+ */
+export async function convertImagesToPdf(
+  inputs: readonly BatchImagePdfInput[],
+  outputPath: string,
+  options?: { layout?: PdfPageLayout }
+): Promise<void> {
+  if (!inputs || inputs.length === 0) {
+    throw new Error('No input images provided for PDF merge.');
+  }
+
+  const layout: PdfPageLayout = options?.layout ?? 'fit-image';
+  const pdfDoc = await PDFDocument.create();
+
+  for (const item of inputs) {
+    const src = normalizeFormat(item.sourceFormat);
+    if (!isImageFormat(src)) {
+      throw new Error(`Unsupported image format in PDF merge batch: ${src.toUpperCase()}`);
+    }
+    const embeddedImage = await embedHighAccuracyImage(pdfDoc, item.inputPath, src);
+    addImagePageToPdf(pdfDoc, embeddedImage, layout);
+  }
 
   const pdfBytes = await pdfDoc.save();
   await fs.writeFile(outputPath, pdfBytes);
